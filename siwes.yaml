@@ -1,0 +1,87 @@
+name: Immutable Blue/Green Deployment
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup HashiCorp Tools
+        uses: hashicorp/setup-terraform@v3
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@v3
+
+      - name: Build Immutable AMI with Packer
+        run: |
+          packer init build.pkr.hcl
+          packer build -var "ami_name=siwes-node-app-${{ github.sha }}" build.pkr.hcl
+          
+          # Parse the manifest to grab the exact AMI ID
+          AMI_ID=$(jq -r '.builds[-1].artifact_id' packer-manifest.json | cut -d ":" -f2)
+          echo "NEW_AMI_ID=$AMI_ID" >> $GITHUB_ENV
+          echo "Built new AMI: $AMI_ID"
+
+      - name: Identify Live and Target Environments
+        id: routing
+        run: |
+          # Dynamically fetch ARNs based on the exact names specified in Terraform
+          ALB_ARN=$(aws elbv2 describe-load-balancers --names "siwes-alb" --query 'LoadBalancers[0].LoadBalancerArn' --output text)
+          LISTENER_ARN=$(aws elbv2 describe-listeners --load-balancer-arn $ALB_ARN --query 'Listeners[0].ListenerArn' --output text)
+          TG_BLUE=$(aws elbv2 describe-target-groups --names "siwes-tg-blue" --query 'TargetGroups[0].TargetGroupArn' --output text)
+          TG_GREEN=$(aws elbv2 describe-target-groups --names "siwes-tg-green" --query 'TargetGroups[0].TargetGroupArn' --output text)
+          
+          # Check which Target Group the ALB Listener is currently pointing to
+          ACTIVE_TG=$(aws elbv2 describe-listeners --listener-arns $LISTENER_ARN --query 'Listeners[0].DefaultActions[0].TargetGroupArn' --output text)
+          
+          # If Blue is active (or if this is the very first run), set Target to Green
+          if [[ "$ACTIVE_TG" == "$TG_BLUE" ]]; then
+            echo "TARGET_ENV=green" >> $GITHUB_ENV
+            echo "TARGET_TG_ARN=$TG_GREEN" >> $GITHUB_ENV
+            echo "LISTENER_ARN=$LISTENER_ARN" >> $GITHUB_ENV
+          else
+            echo "TARGET_ENV=blue" >> $GITHUB_ENV
+            echo "TARGET_TG_ARN=$TG_BLUE" >> $GITHUB_ENV
+            echo "LISTENER_ARN=$LISTENER_ARN" >> $GITHUB_ENV
+          fi
+
+      - name: Provision Target Infrastructure
+        run: |
+          terraform init
+          # Scales the target ASG to 2 instances using the newly built AMI
+          terraform apply -auto-approve \
+            -var="app_ami_id=${{ env.NEW_AMI_ID }}" \
+            -var="target_env=${{ env.TARGET_ENV }}"
+
+      - name: Wait for Target Health Checks
+        run: |
+          echo "Waiting for the new EC2 instances to boot and pass ALB health checks..."
+          aws elbv2 wait target-in-service --target-group-arn ${{ env.TARGET_TG_ARN }}
+
+      - name: Shift Live Traffic
+        run: |
+          echo "Health checks passed. Shifting 100% of ALB traffic to the ${{ env.TARGET_ENV }} environment."
+          aws elbv2 modify-listener \
+            --listener-arn ${{ env.LISTENER_ARN }} \
+            --default-actions Type=forward,TargetGroupArn=${{ env.TARGET_TG_ARN }}
+
+      - name: Graceful Teardown of Old Environment
+        run: |
+          echo "Scaling old environment down to 0 instances..."
+          terraform apply -auto-approve \
+            -var="app_ami_id=${{ env.NEW_AMI_ID }}" \
+            -var="target_env=${{ env.TARGET_ENV }}"
