@@ -214,6 +214,10 @@ resource "aws_lb_listener" "http" {
       status_code  = "503"
     }
   }
+
+  lifecycle {
+    ignore_changes = [default_action]
+  }
 }
 
 resource "aws_lb_target_group" "blue" {

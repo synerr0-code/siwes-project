@@ -39,24 +39,22 @@ jobs:
       - name: Identify Live and Target Environments
         id: routing
         run: |
-          # Dynamically fetch ARNs based on the exact names specified in Terraform
-          ALB_ARN=$(aws elbv2 describe-load-balancers --names "siwes-alb" --query 'LoadBalancers[0].LoadBalancerArn' --output text)
-          LISTENER_ARN=$(aws elbv2 describe-listeners --load-balancer-arn $ALB_ARN --query 'Listeners[0].ListenerArn' --output text)
-          TG_BLUE=$(aws elbv2 describe-target-groups --names "siwes-tg-blue" --query 'TargetGroups[0].TargetGroupArn' --output text)
-          TG_GREEN=$(aws elbv2 describe-target-groups --names "siwes-tg-green" --query 'TargetGroups[0].TargetGroupArn' --output text)
+          # Suppress errors if the ALB doesn't exist yet (First Run scenario)
+          ALB_ARN=$(aws elbv2 describe-load-balancers --names "siwes-alb" --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "NOT_FOUND")
           
-          # Check which Target Group the ALB Listener is currently pointing to
-          ACTIVE_TG=$(aws elbv2 describe-listeners --listener-arns $LISTENER_ARN --query 'Listeners[0].DefaultActions[0].TargetGroupArn' --output text)
-          
-          # If Blue is active (or if this is the very first run), set Target to Green
-          if [[ "$ACTIVE_TG" == "$TG_BLUE" ]]; then
-            echo "TARGET_ENV=green" >> $GITHUB_ENV
-            echo "TARGET_TG_ARN=$TG_GREEN" >> $GITHUB_ENV
-            echo "LISTENER_ARN=$LISTENER_ARN" >> $GITHUB_ENV
-          else
+          if [[ "$ALB_ARN" == "NOT_FOUND" ]]; then
+            echo "First deployment detected! Defaulting to Blue environment."
             echo "TARGET_ENV=blue" >> $GITHUB_ENV
-            echo "TARGET_TG_ARN=$TG_BLUE" >> $GITHUB_ENV
-            echo "LISTENER_ARN=$LISTENER_ARN" >> $GITHUB_ENV
+          else
+            LISTENER_ARN=$(aws elbv2 describe-listeners --load-balancer-arn $ALB_ARN --query 'Listeners[0].ListenerArn' --output text)
+            TG_BLUE=$(aws elbv2 describe-target-groups --names "siwes-tg-blue" --query 'TargetGroups[0].TargetGroupArn' --output text)
+            ACTIVE_TG=$(aws elbv2 describe-listeners --listener-arns $LISTENER_ARN --query 'Listeners[0].DefaultActions[0].TargetGroupArn' --output text)
+            
+            if [[ "$ACTIVE_TG" == "$TG_BLUE" ]]; then
+              echo "TARGET_ENV=green" >> $GITHUB_ENV
+            else
+              echo "TARGET_ENV=blue" >> $GITHUB_ENV
+            fi
           fi
 
       - name: Provision Target Infrastructure
@@ -67,17 +65,27 @@ jobs:
             -var="app_ami_id=${{ env.NEW_AMI_ID }}" \
             -var="target_env=${{ env.TARGET_ENV }}"
 
-      - name: Wait for Target Health Checks
+      - name: Fetch ARNs for Traffic Shift
         run: |
-          echo "Waiting for the new EC2 instances to boot and pass ALB health checks..."
-          aws elbv2 wait target-in-service --target-group-arn ${{ env.TARGET_TG_ARN }}
+          # Now that Terraform has definitely created the infra, fetch the exact ARNs
+          ALB_ARN=$(aws elbv2 describe-load-balancers --names "siwes-alb" --query 'LoadBalancers[0].LoadBalancerArn' --output text)
+          LISTENER_ARN=$(aws elbv2 describe-listeners --load-balancer-arn $ALB_ARN --query 'Listeners[0].ListenerArn' --output text)
+          TARGET_TG_ARN=$(aws elbv2 describe-target-groups --names "siwes-tg-${{ env.TARGET_ENV }}" --query 'TargetGroups[0].TargetGroupArn' --output text)
+          
+          echo "LISTENER_ARN=$LISTENER_ARN" >> $GITHUB_ENV
+          echo "TARGET_TG_ARN=$TARGET_TG_ARN" >> $GITHUB_ENV
 
-      - name: Shift Live Traffic
+      - name: Shift Live Traffic (Associates the ALB)
         run: |
-          echo "Health checks passed. Shifting 100% of ALB traffic to the ${{ env.TARGET_ENV }} environment."
+          echo "Associating the ${{ env.TARGET_ENV }} Target Group with the ALB Listener..."
           aws elbv2 modify-listener \
             --listener-arn ${{ env.LISTENER_ARN }} \
             --default-actions Type=forward,TargetGroupArn=${{ env.TARGET_TG_ARN }}
+
+      - name: Wait for Target Health Checks
+        run: |
+          echo "ALB is now associated. Waiting for instances to become Healthy..."
+          aws elbv2 wait target-in-service --target-group-arn ${{ env.TARGET_TG_ARN }}
 
       - name: Graceful Teardown of Old Environment
         run: |
