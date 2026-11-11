@@ -1,6 +1,5 @@
 terraform {
   backend "s3" {
-    # Replace these with the exact names of the bucket and table you created
     bucket         = "siwes-terraform-state-oreoluwa-2026" 
     key            = "prod/blue-green/terraform.tfstate"
     region         = "us-east-1"
@@ -10,7 +9,6 @@ terraform {
 
 provider "aws" {
   region = "us-east-1"
-  # Hardcoded credentials removed. GitHub Actions will inject them securely via environment variables.
 }
 
 # --- VARIABLES ---
@@ -121,6 +119,25 @@ resource "aws_route_table_association" "priv_association_1b" {
   route_table_id = aws_route_table.traffic_to_nat.id
 }
 
+# --- IAM FOR SESSION MANAGER ---
+resource "aws_iam_role" "ec2_ssm_role" {
+  name = "siwes-ec2-ssm-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "ec2.amazonaws.com" } }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ssm_attach" {
+  role       = aws_iam_role.ec2_ssm_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "ec2_profile" {
+  name = "siwes-ec2-profile"
+  role = aws_iam_role.ec2_ssm_role.name
+}
+
 # --- SECURITY GROUPS ---
 # ALB Security Group
 resource "aws_security_group" "alb_sg" {
@@ -152,10 +169,10 @@ resource "aws_vpc_security_group_egress_rule" "allow_all_traffic_ipv4" {
   ip_protocol       = "-1"
 }
 
-# EC2 App Security Group
+# EC2 App Security Group (Port 3000)
 resource "aws_security_group" "ec2_sg" {
   name        = "EC2_instances_security_group"
-  description = "Allow ONLY inbound traffic from ALB"
+  description = "Allow ONLY inbound traffic from ALB on port 3000"
   vpc_id      = aws_vpc.siwes.id
   tags = { Name = "EC2 security group from alb" }
 }
@@ -226,6 +243,10 @@ resource "aws_launch_template" "app" {
   instance_type = "t3.micro"
   
   vpc_security_group_ids = [aws_security_group.ec2_sg.id]
+
+  iam_instance_profile {
+    name = aws_iam_instance_profile.ec2_profile.name
+  }
 }
 
 resource "aws_autoscaling_group" "blue" {
@@ -255,5 +276,22 @@ resource "aws_autoscaling_group" "green" {
   launch_template {
     id      = aws_launch_template.app.id
     version = "$Latest"
+  }
+}
+
+# --- OBSERVABILITY & ROLLBACK ALARM ---
+resource "aws_cloudwatch_metric_alarm" "high_5xx_errors" {
+  alarm_name          = "High-5xx-Errors"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "HTTPCode_Target_5XX_Count"
+  namespace           = "AWS/ApplicationELB"
+  period              = "60"
+  statistic           = "Sum"
+  threshold           = "5"
+  alarm_description   = "Triggers if the Node app throws more than 5 5xx errors in a minute"
+  
+  dimensions = {
+    LoadBalancer = aws_lb.app_alb.arn_suffix
   }
 }
