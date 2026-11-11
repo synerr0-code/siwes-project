@@ -1,3 +1,13 @@
+terraform {
+  backend "s3" {
+    # Replace these with the exact names of the bucket and table you created
+    bucket         = "siwes-terraform-state-oreoluwa-2026" 
+    key            = "prod/blue-green/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "terraform-state-locks"               
+  }
+}
+
 provider "aws" {
   region = "us-east-1"
   # Hardcoded credentials removed. GitHub Actions will inject them securely via environment variables.
