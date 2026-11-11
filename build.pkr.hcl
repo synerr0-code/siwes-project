@@ -49,7 +49,7 @@ build {
   provisioner "shell" {
     inline = [
       "cd /var/www/app",
-      "npm ci --production",
+      "npm install express",
       "pm2 start server.js --name siwes-node-app",
       "pm2 save",
       "sudo env PATH=$PATH:/usr/bin /usr/lib/node_modules/pm2/bin/pm2 startup systemd -u ubuntu --hp /home/ubuntu"
