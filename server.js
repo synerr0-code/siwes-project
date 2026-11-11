@@ -22,7 +22,7 @@ app.get('/', (req, res) => {
   }, 200); 
 });
 
-const server = app.listen(80, () => console.log(`Running version ${APP_VERSION}`));
+const server = app.listen(3000, () => console.log(`Running version ${APP_VERSION}`));
 
 process.on('SIGINT', () => {
   console.log('Draining connections...');

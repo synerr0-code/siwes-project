@@ -163,8 +163,8 @@ resource "aws_security_group" "ec2_sg" {
 resource "aws_vpc_security_group_ingress_rule" "allow_http_ec2" {
   security_group_id            = aws_security_group.ec2_sg.id
   referenced_security_group_id = aws_security_group.alb_sg.id
-  from_port                    = 80
-  to_port                      = 80
+  from_port                    = 3000
+  to_port                      = 3000
   description                  = "Allow traffic from ALB only"
   ip_protocol                  = "tcp"
 }
@@ -201,7 +201,7 @@ resource "aws_lb_listener" "http" {
 
 resource "aws_lb_target_group" "blue" {
   name                 = "siwes-tg-blue"
-  port                 = 80
+  port                 = 3000
   protocol             = "HTTP"
   vpc_id               = aws_vpc.siwes.id
   deregistration_delay = 60
@@ -211,7 +211,7 @@ resource "aws_lb_target_group" "blue" {
 
 resource "aws_lb_target_group" "green" {
   name                 = "siwes-tg-green"
-  port                 = 80
+  port                 = 3000
   protocol             = "HTTP"
   vpc_id               = aws_vpc.siwes.id
   deregistration_delay = 60
