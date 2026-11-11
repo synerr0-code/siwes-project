@@ -4,7 +4,7 @@ const os = require('os');
 const app = express();
 
 // --- CHANGE THESE TWO VARIABLES FOR EVERY DEPLOYMENT ---
-const APP_VERSION = "v1.0.0"; 
+const APP_VERSION = "v1.0.1"; 
 const BACKGROUND_COLOR = "#007bff"; // Blue. (Change to #28a745 for Green)
 
 app.get('/health', (req, res) => res.status(200).send('OK'));
