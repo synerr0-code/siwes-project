@@ -4,7 +4,7 @@ const os = require('os');
 const app = express();
 
 // --- UPDATE THESE VARIABLES TO TEST BLUE/GREEN DEPLOYMENTS ---
-const APP_VERSION = "v1.0.0";
+const APP_VERSION = "v1.0.1";
 const ENVIRONMENT_NAME = "BLUE ENVIRONMENT"; // Change to "GREEN ENVIRONMENT"
 const THEME_COLOR = "#006eff";             // Blue: #006eff | Green: #10b981
 const THEME_DARK = "#0047ab";              // Blue: #0047ab | Green: #047857
